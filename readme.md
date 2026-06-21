@@ -107,6 +107,8 @@ Now, to launch the emulator, I'd recommend using the following command:
 dtpc dtpc -video none -samplerate 20000
 ```
 
+For future use, you can make a bat file with your preferred commands and place it in the mame folder, for quick access to starting the emulator.
+
 The DECtalk software will now be loaded to the DECtalk PC card, and you will then hear the startup message: "DECtalk PC is running.". You should now be able to send text to the DECtalk PC emulator through the other COM port you set up, COM9 in this example.
 
 ## List of available variables
