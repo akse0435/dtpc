@@ -288,6 +288,10 @@ private:
 	uint16_t m_flop=0;                              // last value of bit 0x0100
 	int m_flop_skips=0;                             // number of times we continued without a toggle
 	uint32_t m_alloc_lin=0;                         // linear address from ALLOC
+	// Some kernels (e.g. the 4.6 build) expect a 12-byte SET_DIC parameter block
+	// with a trailing 2-byte dictionary-slot index, instead of the 10-byte block
+	// used by the 4.2/NWS kernels. Auto-detected from kernel.sys in machine_start.
+	bool m_setdic12=false;
 	size_t m_ordidx=0; int m_xstage=0;              // module order + stage
 	std::vector<uint8_t> m_rtq; int m_rt_mode=0;    // runtime text pipe (1=send, 2=fetch)
 	bool m_rt_first_tx=false, m_rt_first_rx=false, m_rt_first_in=false;
@@ -496,6 +500,21 @@ void dtpc_state::load_module_files() {
 #else
 	const char *seps = "/";
 #endif
+	// Fallback names: if the primary module file is missing, these alternates are
+	// tried IN ORDER until one is found. The module keeps its PRIMARY name, so the
+	// rest of the code (loading order, find_mod lookups) is completely unchanged.
+	//   dtpcdic.dic -> dtpc.dic -> dic_us.dic -> nws_us.dic
+	//   lts.exe     -> lts_us.exe
+	//   ph.exe      -> ph_us.exe
+	//   usa.exe     -> us.exe
+	struct fallback_t { const char *primary; std::vector<const char *> alts; };
+	static const std::vector<fallback_t> fallbacks = {
+		{ "dtpcdic.dic", { "dtpc.dic", "dic_us.dic", "nws_us.dic" } },
+		{ "lts.exe",     { "lts_us.exe" } },
+		{ "ph.exe",      { "ph_us.exe" } },
+		{ "usa.exe",     { "us.exe" } },
+	};
+
 	for (const char *nm : names) {
 		module_t m; m.name = nm;
 		std::string used; bool ok=false;
@@ -507,16 +526,27 @@ void dtpc_state::load_module_files() {
 				used = p; ok = true;
 			}
 		}
-		// Dictionary fallback: if dtpcdic.dic is missing, dtpc.dic is tried instead.
-		// The module name stays "dtpcdic.dic", so the rest of the code is unchanged.
-		if (!ok && std::string(nm) == "dtpcdic.dic") {
-			for (const char *sp = seps; *sp && !ok; ++sp) {
-				std::string p = dir; p += *sp; p += "dtpc.dic";
-				std::ifstream f(p, std::ios::binary);
-				if (f) {
-					m.file.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
-					used = p; ok = true;
+		// Fallback: if the primary file is missing, try its alternate names in the
+		// prioritized order above. The module name stays the PRIMARY name, so the
+		// rest of the code is unchanged.
+		if (!ok) {
+			for (const fallback_t &fb : fallbacks) {
+				if (std::string(nm) != fb.primary) continue;
+				for (const char *alt : fb.alts) {
+					for (const char *sp = seps; *sp && !ok; ++sp) {
+						std::string p = dir; p += *sp; p += alt;
+						std::ifstream f(p, std::ios::binary);
+						if (f) {
+							m.file.assign(std::istreambuf_iterator<char>(f), std::istreambuf_iterator<char>());
+							used = p; ok = true;
+						}
+					}
+					if (ok) {
+						m_log.line("  fallback: %s not found, using %s instead", nm, alt);
+						break;
+					}
 				}
+				break;   // primary matched - no other fallback entry applies
 			}
 		}
 		if (!ok) {
@@ -557,7 +587,7 @@ void dtpc_state::build_alloc_actions(module_t &m) {
 			m.image.size(), m.image.size()>>4, m.minalloc, paras);
 	} else {
 		// Dictionary: exactly as the source's load_dic:
-		//   total_paras = ((entries*4)+dic_bytes)>>4)+2
+		//   total_paras = ((entries*4+dic_bytes)>>4)+2
 		uint32_t entries = (uint32_t)m.file[0]|((uint32_t)m.file[1]<<8)|((uint32_t)m.file[2]<<16)|((uint32_t)m.file[3]<<24);
 		uint32_t dsize   = (uint32_t)m.file[4]|((uint32_t)m.file[5]<<8)|((uint32_t)m.file[6]<<16)|((uint32_t)m.file[7]<<24);
 		paras = (uint16_t)(((entries*4 + dsize) >> 4) + 2);
@@ -612,7 +642,8 @@ void dtpc_state::build_xfer_actions(module_t &m, bool is_dict) {
 	}
 	m_acts.push_back({A_VERIFY, {}, nullptr});
 	if (is_dict) {
-		// SET_DIC: 5,4 + 10-byte block: address(4) + entry count(4) + type(2).
+		// SET_DIC: 5,4 + parameter block: address(4) + entry count(4) + type(2),
+		// plus a 2-byte dictionary-slot index for the 12-byte (4.6) kernel variant.
 		// The entry count is read from the dictionary file's first dword.
 		uint32_t entries = (uint32_t)m.file[0] | ((uint32_t)m.file[1]<<8)
 		                 | ((uint32_t)m.file[2]<<16) | ((uint32_t)m.file[3]<<24);
@@ -634,8 +665,17 @@ void dtpc_state::build_xfer_actions(module_t &m, bool is_dict) {
 		// 'push 0', while 'push 4' is the SPANISH call (loc_104BC).
 		const uint16_t DICT_TYPE_PRIMARY_ENGLISH = 0;
 		blk.push_back(DICT_TYPE_PRIMARY_ENGLISH & 0xff); blk.push_back(DICT_TYPE_PRIMARY_ENGLISH >> 8);
-		m_log.line("SET_DIC: off 0x%04X, seg 0x%04X, %u entries, type %u (primary English).",
-			dic_off, dic_seg, entries, DICT_TYPE_PRIMARY_ENGLISH);
+		// The 4.6 kernel expects a 12-byte block: a trailing 2-byte dictionary-slot
+		// index follows the type word. Slot 0 is the primary dictionary, which makes
+		// the 4.6 kernel store the pointer in the same place the 4.2/NWS kernels use
+		// for their single fixed dictionary. The 4.2/NWS kernels read only 10 bytes,
+		// so the index is appended ONLY when the 12-byte kernel was detected.
+		if (m_setdic12) {
+			const uint16_t DICT_SLOT_PRIMARY = 0;
+			blk.push_back(DICT_SLOT_PRIMARY & 0xff); blk.push_back(DICT_SLOT_PRIMARY >> 8);
+		}
+		m_log.line("SET_DIC: off 0x%04X, seg 0x%04X, %u entries, type %u (primary English), %u-byte block.",
+			dic_off, dic_seg, entries, DICT_TYPE_PRIMARY_ENGLISH, (unsigned)blk.size());
 		m_acts.push_back({A_WAIT, {}, nullptr});
 		m_acts.push_back({A_SEND, {CTRL, OP_SETDIC}, nullptr});
 		m_acts.push_back({A_WAIT, {}, nullptr});
@@ -1357,6 +1397,33 @@ void dtpc_state::machine_start() {
 	else if (!m_serial.pty_name().empty()) m_log.line("PTY created - your program opens: %s",m_serial.pty_name().c_str());
 	else m_log.line("Serial port opened OK.");
 	load_module_files();
+	// Detect which SET_DIC parameter-block format the loaded kernel expects.
+	// The 4.6 kernel programs its DMA1 transfer-count to 0x0C (12 bytes) and reads
+	// a trailing 2-byte dictionary-slot index, whereas the 4.2/NWS kernels use 0x0A
+	// (10 bytes) and no index. The two differ by exactly that one immediate in the
+	// SET_DIC handler. We recognise the 12-byte variant by the byte sequence that
+	// writes the DMA1 transfer-count register inside that handler:
+	//   push 0Ch ; mov ax,ds:0FBEh ; add ax,0D8h ; push ax
+	//   6A 0C    ; A1 BE 0F        ; 05 D8 00     ; 50
+	// This pattern appears exactly once in the 4.6 kernel and not at all in the
+	// 4.2/NWS kernels (which carry 'push 0Ah' / 6A 0A in the same place), so it is a
+	// safe, specific discriminator. If no kernel is loaded, or the pattern is absent,
+	// we keep the default 10-byte block and behaviour is unchanged.
+	if (module_t *kern = find_mod("kernel.sys")) {
+		static const uint8_t sig12[] = { 0x6A,0x0C, 0xA1,0xBE,0x0F, 0x05,0xD8,0x00, 0x50 };
+		const std::vector<uint8_t> &f = kern->file;
+		if (f.size() >= sizeof(sig12)) {
+			for (size_t i = 0; i + sizeof(sig12) <= f.size(); ++i) {
+				if (std::memcmp(f.data()+i, sig12, sizeof(sig12)) == 0) {
+					m_setdic12 = true;
+					break;
+				}
+			}
+		}
+		m_log.line("SET_DIC format: %s (auto-detected from kernel.sys).",
+			m_setdic12 ? "12-byte block with dictionary-slot index"
+			           : "10-byte block (4.2/NWS)");
+	}
 	m_log.line("DSP clock: %u MHz%s.", m_dsp_mhz, m_dsp_mhz==80 ? " (MAME default)" : " (adjusted via DTPC_DSPMHZ)");
 	m_log.line("Output gain (DTPC_GAIN): %.3f x  (1.0 = unchanged; 2.0 ~ +6.02 dB, compensates for half scale).", m_out_gain);
 	save_item(NAME(m_cmd)); save_item(NAME(m_stat)); save_item(NAME(m_data));
