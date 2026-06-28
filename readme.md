@@ -1,4 +1,6 @@
-# dtpc: DECtalk PC Emulator
+# DTPC
+
+DECtalk PC Emulator.
 
 ## What is this
 
@@ -73,7 +75,7 @@ You need to download and set up a few things in order to get the emulator up and
 
 1. [COM0COM](https://dectalk.nu/Software%20and%20Manuals/Software/Miscellaneous/setup_com0com_W7_x64_signed.exe): See below.
 2. [DECtalk PC ROMs](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dectalk_isa.zip): Rename the downloaded file to `dtpc.zip`, and put it into `C:\mame\roms`.
-3. [DECtalk PC software modules](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dtpc-modules.zip): This package contains modules for 7 different DECtalk versions. The emulator is optimized for version 4.2CD, but all versions will work. Create a folder in `C:\mame` called `modules`, and copy the files from the version you want into it.
+3. [DECtalk PC software modules](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dtpc-modules.zip): This package contains modules for all known DECtalk versions. The emulator is optimized for version 4.2CD, but all versions will work. Create a folder in `C:\mame` called `modules`, and copy the files from the version you want into it.
 
 ### How to set up COM0COM
 
