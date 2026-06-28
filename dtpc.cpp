@@ -460,39 +460,6 @@ void dtpc_state::load_module_files() {
 	while (!dir.empty() && (dir.back()=='/' || dir.back()=='\\' || dir.back()==' ')) dir.pop_back();
 	m_log.line("Module folder (DTPC_MODULES): \"%s\"", dir.c_str());
 
-	// Show what is ACTUALLY in the folder - reveals wrong names/subfolders.
-	m_log.line("Folder contents:");
-	bool any=false;
-#ifdef _WIN32
-	WIN32_FIND_DATAA fd; std::string pat = dir + "\\*";
-	HANDLE h = FindFirstFileA(pat.c_str(), &fd);
-	if (h == INVALID_HANDLE_VALUE) {
-		m_log.line("  *** Could NOT open the folder. Does \"%s\" exist? Is the path correct?", dir.c_str());
-	} else {
-		do {
-			if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-				if (strcmp(fd.cFileName,".") && strcmp(fd.cFileName,".."))
-					{ m_log.line("    [subfolder] %s", fd.cFileName); any=true; }
-			} else {
-				m_log.line("    %s (%lu bytes)", fd.cFileName, (unsigned long)fd.nFileSizeLow); any=true;
-			}
-		} while (FindNextFileA(h, &fd));
-		FindClose(h);
-	}
-#else
-	DIR *dp = opendir(dir.c_str());
-	if (!dp) {
-		m_log.line("  *** Could NOT open the folder \"%s\".", dir.c_str());
-	} else {
-		struct dirent *de;
-		while ((de = readdir(dp)) != nullptr) {
-			if (strcmp(de->d_name,".") && strcmp(de->d_name,"..")) { m_log.line("    %s", de->d_name); any=true; }
-		}
-		closedir(dp);
-	}
-#endif
-	if (!any) m_log.line("  (folder is empty or inaccessible)");
-
 	// Try to open each expected module; log the EXACT path tried.
 	const char *names[]={"kernel.sys","dtpcdic.dic","lts.exe","ph.exe","cmd.exe","usa.exe","dtpc_850.exe"};
 #ifdef _WIN32
