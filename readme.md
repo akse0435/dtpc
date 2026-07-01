@@ -12,6 +12,7 @@ Please Note: A big part of this emulator has been coded with the help of AI, so 
 
 ## How to build
 
+A Windows binary of the emulator is available in this repository under `Releases`, though if you should want to build it yourself, use the following instructions.
 The following procedure has been tested in MSYS2 MINGW64 on Windows.
 
 First, download and install [MSYS2](https://www.msys2.org/) on your computer. When the installation is complete, search for MINGW64 in the start menu, and launch MSYS2 MINGW64 as administrator.
@@ -24,7 +25,7 @@ pacman -S --needed make git mingw-w64-x86_64-gcc mingw-w64-x86_64-python
 
 This will install GCC, make, Python and Git. If you're asked "Proceed with installation?", press y and then enter to confirm. Then wait until it's done.
 
-You now need to download a copy of the MAME source code, which is needed to build the emulator, since it needs the MAME core to run. First navigate to the root of your C drive with the following command:
+You now need to download a copy of the MAME source code including the DECtalk PC emulation. First navigate to the root of your C drive with the following command:
 
 ```bash
 cd /c
@@ -33,27 +34,14 @@ cd /c
 Then run:
 
 ```bash
-git clone --depth 1 https://github.com/mamedev/mame.git
+git clone --depth 1 --branch dtpc-2026.07.01 https://github.com/akse0435/mame.git
 ```
 
-This will download the MAME source code to `C:\mame`. If you would like to download a specific version of MAME, e.g. MAME 0.287 for Windows 7 compatibility, you can add `--branch mame0xxx` before the URL in the command above. Then wait until it's done. This may take a while depending on your internet speed.
-
-Now, copy `dtpc.cpp` from this repository to the following path:
-
-```
-C:\mame\src\mame\dec
-```
-
-You now need to register dtpc in MAME's driver list. Back in MINGW64, navigate to the root of the MAME directory with the following command:
+This will download the source code to `C:\mame`. Then wait until it's done. This may take a while depending on your internet speed.
+When it's done, navigate to the root of the MAME directory with the following command:
 
 ```bash
 cd /c/mame
-```
-
-Then run the following command to add dtpc to `mame.lst`:
-
-```bash
-grep -q "dec/dtpc.cpp" /c/mame/src/mame/mame.lst || printf '\n@source:dec/dtpc.cpp\ndtpc\n' >> /c/mame/src/mame/mame.lst
 ```
 
 You're now ready to build. Run the following command:
@@ -71,6 +59,8 @@ A few tips:
 
 ## How to use
 
+If you downloaded a binary from this repository, refer to the included `readme.html`. If you built it yourself, read on.
+
 You need to download and set up a few things in order to get the emulator up and running:
 
 1. [COM0COM](https://dectalk.nu/Software%20and%20Manuals/Software/Miscellaneous/setup_com0com_W7_x64_signed.exe): See below.
@@ -81,7 +71,7 @@ You need to download and set up a few things in order to get the emulator up and
 
 Install COM0COM as you would any other program. Nothing needs to be changed during the installation before the finish screen. If you get any warnings about installing new drivers during the installation, just press install. When you get to the finish screen, be sure to check the box called "Launch Setup", then press finish.
 
-The COM0COM setup will now open, and you should be in the first of two text fields. In the first, enter the COM port the DECtalk PC sends data to, and in the second, enter the COM port you communicate through, i.e. the one you set in your DECtalk Express driver, or use when sending text to the emulator. Then navigate to the apply button and press enter. You should now be all set with COM0COM, and you may close the window.
+The COM0COM setup will now open, and you should be in the first of two text fields. In the first, enter the COM port the DECtalk PC sends data to, and in the second, enter the COM port you communicate through, i.e. the one you set in your DECtalk Express driver, or use when sending text to the emulator. As an example, enter COM8 in the first field and COM9 in the second. Then navigate to the apply button and press enter. You should now be all set with COM0COM, and you may close the window.
 
 ### How to launch the DECtalk PC emulator
 
