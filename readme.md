@@ -65,7 +65,7 @@ You need to download and set up a few things in order to get the emulator up and
 
 1. [COM0COM](https://dectalk.nu/Software%20and%20Manuals/Software/Miscellaneous/setup_com0com_W7_x64_signed.exe): See below.
 2. [DECtalk PC ROMs](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dectalk_isa.zip): Rename the downloaded file to `dtpc.zip`, and put it into `C:\mame\roms`.
-3. [DECtalk PC software modules](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dtpc-modules.zip): This package contains modules for all known DECtalk versions. The emulator is optimized for version 4.2CD, but all versions will work. Create a folder in `C:\mame` called `modules`, and copy the files from the version you want into it.
+3. [DECtalk PC software modules](https://dectalk.nu/Software%20and%20Manuals/Hardware/DECtalk/PC1/Software/dtpc-modules.zip): This package contains modules for all known DECtalk versions. The emulator is optimized for version 4.2CD, but all versions will work. Create a folder in `C:\mame` called `modules`, and copy the files from the version you want into it. In the case of version 4.6, you have several languages to choose from, each in their own subfolder.
 
 ### How to set up COM0COM
 
@@ -120,5 +120,6 @@ The following is a complete list of variables that can be changed before launchi
 
 - All modules and the dictionary load correctly, proven by a RAM dump.
 - A few crashes have been fixed.
+- All languages are supported through fallback to other file names for each relevant module.
 - It has a latency of about 400 milliseconds from pressing a key in a screen reader (or sending text) until speech is heard.
 - The code is currently a bit cluttered, and could use a clean-up.

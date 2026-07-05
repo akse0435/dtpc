@@ -476,10 +476,10 @@ void dtpc_state::load_module_files() {
 	//   usa.exe     -> us.exe
 	struct fallback_t { const char *primary; std::vector<const char *> alts; };
 	static const std::vector<fallback_t> fallbacks = {
-		{ "dtpcdic.dic", { "dtpc.dic", "dic_us.dic", "nws_us.dic" } },
-		{ "lts.exe",     { "lts_us.exe" } },
-		{ "ph.exe",      { "ph_us.exe" } },
-		{ "usa.exe",     { "us.exe" } },
+		{ "dtpcdic.dic", { "dtpc.dic", "dic_us.dic", "nws_us.dic", "dic_uk.dic", "dic_sp.dic", "dic_la.dic", "nws_la.dic", "dic_gr.dic" } },
+		{ "lts.exe",     { "lts_us.exe", "lts_uk.exe", "lts_sp.exe", "lts_la.exe", "lts_gr.exe" } },
+		{ "ph.exe",      { "ph_us.exe", "ph_uk.exe", "ph_sp.exe", "ph_la.exe", "ph_gr.exe" } },
+		{ "usa.exe",     { "us.exe", "uk.exe", "sp.exe", "la.exe", "gr.exe" } },
 	};
 
 	for (const char *nm : names) {
