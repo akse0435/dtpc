@@ -193,6 +193,45 @@ enum : uint16_t { STAT_TR_CHAR=0x0002,   // card has a character ready (GET_CHAR
 enum : uint16_t { ST_READY=0x0DEC, CMD_GO=0x0000, CMD_A=0x5000, CMD_B=0x6000,
                   CMD_LOAD=0x4000, CMD_START=0x4001, ST_ACK1=0x8000, ST_ACK2=0xF000 };
 
+// Primary-dictionary language codes, recovered from the hardware source
+// (dttsr.h dectalk_load_dic.lang / ldr_file.c LANG_*). Used by SET_DIC below to
+// announce which localized dictionary the fallback table actually loaded.
+enum : uint16_t { LANG_english=0x0000, LANG_german=0x0002, LANG_spanish=0x0003,
+                  LANG_british=0x0005, LANG_latin_american=0x0006 };
+
+// Map a primary-dictionary filename to its language code. The fallback table in
+// load_module_files can substitute a localized dictionary for the default
+// US-English dtpcdic.dic, so SET_DIC must announce the matching language.
+// dtpc.dic / dic_us.dic / nws_us.dic are US English like the default; anything
+// not listed also defaults to US English.
+static uint16_t dic_lang_from_name(const char *fname) {
+	struct { const char *name; uint16_t lang; } tbl[] = {
+		{ "dic_uk.dic", LANG_british },
+		{ "dic_sp.dic", LANG_spanish },
+		{ "dic_la.dic", LANG_latin_american },
+		{ "nws_la.dic", LANG_latin_american },
+		{ "dic_gr.dic", LANG_german },
+	};
+	if (fname)
+		for (const auto &e : tbl)
+			if (std::strcmp(fname, e.name) == 0) return e.lang;
+	return LANG_english;
+}
+
+// Fold a language code into the 10-byte (4.2/NWS) primary-dictionary type word.
+// That block has no separate 'lang' word, so the language lives in the type
+// itself (dttsr.h under NWSNOAA: EPRIMARY_DIC/SPRIMARY_DIC/GPRIMARY_DIC/
+// BPRIMARY_DIC/LPRIMARY_DIC). EPRIMARY_DIC=0 matches the previous English value.
+static uint16_t nws_primary_type(uint16_t lang) {
+	switch (lang) {
+		case LANG_spanish:        return 4;   // SPRIMARY_DIC
+		case LANG_german:         return 8;   // GPRIMARY_DIC
+		case LANG_british:        return 10;  // BPRIMARY_DIC
+		case LANG_latin_american: return 12;  // LPRIMARY_DIC
+		default:                  return 0;   // EPRIMARY_DIC (English)
+	}
+}
+
 // A loaded module + parsed MZ.
 struct module_t {
 	std::string name;
@@ -200,6 +239,7 @@ struct module_t {
 	std::vector<uint8_t> image;      // relocatable image (without header)
 	std::vector<std::pair<uint16_t,uint16_t>> relocs;
 	uint16_t ip=0, cs=0, minalloc=0; bool is_mz=false;
+	uint16_t dic_lang=LANG_english;  // primary-dictionary language (set at load time from the .dic filename)
 };
 
 class dtpc_state : public driver_device {
@@ -289,7 +329,7 @@ private:
 	int m_flop_skips=0;                             // number of times we continued without a toggle
 	uint32_t m_alloc_lin=0;                         // linear address from ALLOC
 	// Some kernels (e.g. the 4.6 build) expect a 12-byte SET_DIC parameter block
-	// with a trailing 2-byte dictionary-slot index, instead of the 10-byte block
+	// with a trailing 2-byte language word, instead of the 10-byte block
 	// used by the 4.2/NWS kernels. Auto-detected from kernel.sys in machine_start.
 	bool m_setdic12=false;
 	size_t m_ordidx=0; int m_xstage=0;              // module order + stage
@@ -484,7 +524,7 @@ void dtpc_state::load_module_files() {
 
 	for (const char *nm : names) {
 		module_t m; m.name = nm;
-		std::string used; bool ok=false;
+		std::string used; const char *used_name=nm; bool ok=false;
 		for (const char *sp = seps; *sp && !ok; ++sp) {
 			std::string p = dir; p += *sp; p += nm;
 			std::ifstream f(p, std::ios::binary);
@@ -509,6 +549,7 @@ void dtpc_state::load_module_files() {
 						}
 					}
 					if (ok) {
+						used_name = alt;
 						m_log.line("  fallback: %s not found, using %s instead", nm, alt);
 						break;
 					}
@@ -522,6 +563,11 @@ void dtpc_state::load_module_files() {
 		}
 		if (std::string(nm).find(".dic") == std::string::npos) {
 			if (!parse_mz(m)) m_log.line("  WARNING: %s is not a valid MZ", nm);
+		} else {
+			// Remember which language this primary dictionary is, so SET_DIC can
+			// announce it. The module keeps its PRIMARY name, so the language is
+			// taken from the actual file that was found (primary or fallback alt).
+			m.dic_lang = dic_lang_from_name(used_name);
 		}
 		m_log.line("  found: %-13s %zu bytes%s  [%s]", nm, m.file.size(), m.is_mz?" (MZ)":"", used.c_str());
 		m_mods.push_back(std::move(m));
@@ -610,7 +656,7 @@ void dtpc_state::build_xfer_actions(module_t &m, bool is_dict) {
 	m_acts.push_back({A_VERIFY, {}, nullptr});
 	if (is_dict) {
 		// SET_DIC: 5,4 + parameter block: address(4) + entry count(4) + type(2),
-		// plus a 2-byte dictionary-slot index for the 12-byte (4.6) kernel variant.
+		// plus a 2-byte language word for the 12-byte (4.6) kernel variant.
 		// The entry count is read from the dictionary file's first dword.
 		uint32_t entries = (uint32_t)m.file[0] | ((uint32_t)m.file[1]<<8)
 		                 | ((uint32_t)m.file[2]<<16) | ((uint32_t)m.file[3]<<24);
@@ -627,22 +673,26 @@ void dtpc_state::build_xfer_actions(module_t &m, bool is_dict) {
 		blk.push_back(dic_seg & 0xff); blk.push_back(dic_seg >> 8);
 		blk.push_back(entries & 0xff); blk.push_back((entries>>8) & 0xff);
 		blk.push_back((entries>>16) & 0xff); blk.push_back((entries>>24) & 0xff);
-		// Type word: primary ENGLISH = 0. Confirmed in our 4.2CD DT_LOAD.EXE:
-		// load_dic (sub_11246) is called for the English dictionary at loc_10330 with
-		// 'push 0', while 'push 4' is the SPANISH call (loc_104BC).
-		const uint16_t DICT_TYPE_PRIMARY_ENGLISH = 0;
-		blk.push_back(DICT_TYPE_PRIMARY_ENGLISH & 0xff); blk.push_back(DICT_TYPE_PRIMARY_ENGLISH >> 8);
-		// The 4.6 kernel expects a 12-byte block: a trailing 2-byte dictionary-slot
-		// index follows the type word. Slot 0 is the primary dictionary, which makes
-		// the 4.6 kernel store the pointer in the same place the 4.2/NWS kernels use
-		// for their single fixed dictionary. The 4.2/NWS kernels read only 10 bytes,
-		// so the index is appended ONLY when the 12-byte kernel was detected.
+		// Type word. The primary-dictionary language (recovered from the .dic
+		// filename at load time) selects this value. In the 12-byte (4.6) block the
+		// type is the generic PRIMARY_DIC (0) and the language travels in the trailing
+		// 'lang' word below; in the 10-byte (4.2/NWS) block there is no lang word, so
+		// the language is folded into the type word itself (dttsr.h EPRIMARY_DIC/
+		// SPRIMARY_DIC/...). Confirmed in our 4.2CD DT_LOAD.EXE: load_dic (sub_11246)
+		// pushes 0 for the English dictionary (loc_10330) and 4 for the SPANISH call
+		// (loc_104BC), matching EPRIMARY_DIC=0 / SPRIMARY_DIC=4.
+		const uint16_t dic_lang = m.dic_lang;
+		const uint16_t dic_type = m_setdic12 ? 0 : nws_primary_type(dic_lang);
+		blk.push_back(dic_type & 0xff); blk.push_back(dic_type >> 8);
+		// The 4.6 kernel expects a 12-byte block: a trailing 2-byte language word
+		// follows the type word (dttsr.h: dectalk_load_dic.lang, present only in the
+		// non-NWSNOAA build). The 4.2/NWS kernels read only 10 bytes, so the lang
+		// word is appended ONLY when the 12-byte kernel was detected.
 		if (m_setdic12) {
-			const uint16_t DICT_SLOT_PRIMARY = 0;
-			blk.push_back(DICT_SLOT_PRIMARY & 0xff); blk.push_back(DICT_SLOT_PRIMARY >> 8);
+			blk.push_back(dic_lang & 0xff); blk.push_back(dic_lang >> 8);
 		}
-		m_log.line("SET_DIC: off 0x%04X, seg 0x%04X, %u entries, type %u (primary English), %u-byte block.",
-			dic_off, dic_seg, entries, DICT_TYPE_PRIMARY_ENGLISH, (unsigned)blk.size());
+		m_log.line("SET_DIC: off 0x%04X, seg 0x%04X, %u entries, type %u, lang %u, %u-byte block.",
+			dic_off, dic_seg, entries, dic_type, dic_lang, (unsigned)blk.size());
 		m_acts.push_back({A_WAIT, {}, nullptr});
 		m_acts.push_back({A_SEND, {CTRL, OP_SETDIC}, nullptr});
 		m_acts.push_back({A_WAIT, {}, nullptr});
@@ -1366,8 +1416,8 @@ void dtpc_state::machine_start() {
 	load_module_files();
 	// Detect which SET_DIC parameter-block format the loaded kernel expects.
 	// The 4.6 kernel programs its DMA1 transfer-count to 0x0C (12 bytes) and reads
-	// a trailing 2-byte dictionary-slot index, whereas the 4.2/NWS kernels use 0x0A
-	// (10 bytes) and no index. The two differ by exactly that one immediate in the
+	// a trailing 2-byte language word, whereas the 4.2/NWS kernels use 0x0A
+	// (10 bytes) and no lang word. The two differ by exactly that one immediate in the
 	// SET_DIC handler. We recognise the 12-byte variant by the byte sequence that
 	// writes the DMA1 transfer-count register inside that handler:
 	//   push 0Ch ; mov ax,ds:0FBEh ; add ax,0D8h ; push ax
@@ -1388,7 +1438,7 @@ void dtpc_state::machine_start() {
 			}
 		}
 		m_log.line("SET_DIC format: %s (auto-detected from kernel.sys).",
-			m_setdic12 ? "12-byte block with dictionary-slot index"
+			m_setdic12 ? "12-byte block with language word"
 			           : "10-byte block (4.2/NWS)");
 	}
 	m_log.line("DSP clock: %u MHz%s.", m_dsp_mhz, m_dsp_mhz==80 ? " (MAME default)" : " (adjusted via DTPC_DSPMHZ)");

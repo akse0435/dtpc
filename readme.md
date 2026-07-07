@@ -34,7 +34,7 @@ cd /c
 Then run:
 
 ```bash
-git clone --depth 1 --branch dtpc-2026.07.01 https://github.com/akse0435/mame.git
+git clone --depth 1 --branch dtpc-2026.07.07 https://github.com/akse0435/mame.git
 ```
 
 This will download the source code to `C:\mame`. Then wait until it's done. This may take a while depending on your internet speed.
