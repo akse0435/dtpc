@@ -256,7 +256,18 @@ private:
 	uint16_t cmd_r() { return m_cmd; }
 	void data_w(uint16_t data) { m_data=data; }
 	uint16_t data_r() { return m_data; }
-	uint16_t host_irq_r() { return 0; }
+	uint16_t host_irq_r() { m_pcs3_reads++; return 0; }
+	// Live state of 80186 DMA channel 0 - the channel that should feed the DSP
+	// parameter latch. CON bit 1 (ST_STOP) set means the channel is armed.
+	std::string dma0_state() {
+		const int DSRC=I8086_HALT+7, DDST=I8086_HALT+9, DTC=I8086_HALT+11, DCON=I8086_HALT+13;
+		char b[128];
+		uint16_t con = (uint16_t)m_cpu->state_int(DCON);
+		snprintf(b, sizeof(b), "SRC=0x%05X DST=0x%05X TC=0x%04X CON=0x%04X(%s)",
+			(uint32_t)m_cpu->state_int(DSRC), (uint32_t)m_cpu->state_int(DDST),
+			(uint32_t)m_cpu->state_int(DTC), con, (con & 0x0002) ? "armed" : "stopped");
+		return std::string(b);
+	}
 	uint8_t dma_r() { m_latch_reads++; m_latch_fresh=false; return m_dma; }
 	void dma_w(uint8_t data) {
 		// If the card has not yet read the previous byte (latch still "fresh"),
@@ -264,7 +275,23 @@ private:
 		if (m_latch_fresh) m_latch_collisions++;
 		m_dma=data; m_latch_fresh=true; m_latch_writes++;
 	}
-	void dac_w(uint16_t data) { m_dac_writes++; m_dac->write(data>>4); }
+	// The DSP writes a signed 16-bit sample and the DAC latches the top 12 bits.
+	//
+	// The AD7541 is a multiplying DAC driven through an inverting I/V converter, so
+	// Vout = -Vref * D / 4096: the card's analog output is inverted with respect to
+	// the code the DSP writes. Verified against real DECtalk hardware - 54 of 54
+	// voiced 30 ms windows matched at a median correlation of -0.965 without this
+	// inversion and +0.967 with it. Negating -2048 does not fit in 12 bits, hence
+	// the clamp. With DTPC_ANALOG=0 the codes are passed through untouched.
+	void dac_w(uint16_t data) {
+		m_dac_writes++;
+		int16_t s = int16_t(data) >> 4;
+		if (m_analog) {
+			s = -s;
+			if (s > 2047) s = 2047;
+		}
+		m_dac->write(uint16_t(s) & 0x0fff);
+	}
 	void output_ctl_w(uint16_t data);
 	uint16_t dsp_dma_r();
 	void dsp_dma_w(uint16_t data);
@@ -339,6 +366,9 @@ private:
 	long m_rt_idle=0;
 	unsigned m_dsp_mhz=80;
 	double m_out_gain=1.0;   // extra output gain after the card (DTPC_GAIN; 1.0=unchanged)
+	bool m_analog=true;      // model the card's analog output stage (DTPC_ANALOG)
+	int m_gain_note=0;       // 0 ok/default, 1 DTPC_GAIN unparseable, 2 out of range
+	bool m_gain_ignored=false; // DTPC_GAIN was set but DTPC_ANALOG=0
 	std::chrono::steady_clock::time_point m_wall0;
 	long m_dac_at_mark=0; bool m_wall_init=false;
 	double m_emu_at_mark=0;
@@ -346,6 +376,8 @@ private:
 	bool m_dsp_running=false; long m_ctl_writes=0;
 	long m_bio_polls=0;      // DSP polls BIO (= the DSP's ROM loop is running)
 	long m_dsp_feed=0;       // words fed to the DSP (cpu/DMA0 -> port 0x500)
+	long m_dsp_overwrites=0; // words the 80186 clobbered before the DSP read them
+	long m_pcs3_reads=0;     // reads of PCS3 (0x580) by the 80186
 	long m_dsp_consume=0;    // words consumed by the DSP (DSP reads port 0)
 	long m_dac_writes=0;     // samples out to the DAC
 	int  m_ctl_log=0;        // rate-limit on CTL log lines
@@ -421,7 +453,17 @@ void dtpc_state::output_ctl_w(uint16_t data) {
 	m_ctl=data;
 }
 uint16_t dtpc_state::dsp_dma_r() { m_dsp_consume++; m_bio=ASSERT_LINE; return m_dsp_dma; }
-void dtpc_state::dsp_dma_w(uint16_t data) { m_dsp_feed++; m_bio=CLEAR_LINE; m_dsp_dma=data; }
+void dtpc_state::dsp_dma_w(uint16_t data) {
+	m_dsp_feed++;
+	if (m_bio==CLEAR_LINE) m_dsp_overwrites++;  // previous word was never read
+	m_bio=CLEAR_LINE; m_dsp_dma=data;
+}
+// BIO is the DSP's "latch empty, send me the next parameter word" line. On the
+// real card it is wired to the 80186's DRQ0, so an empty latch requests a
+// synchronized DMA transfer from memory to port 0x500. dma_sync_req(0) models
+// that. It only does anything while channel 0 is armed (ST_STOP set); the boot
+// ROM stops both channels at reset, so the kernel must arm channel 0 when
+// synthesis starts - exactly as it arms channel 1 for host transfers.
 int dtpc_state::bio_line_r() {
 	m_bio_polls++;
 	if (m_bio==ASSERT_LINE)
@@ -814,8 +856,8 @@ bool dtpc_state::run_actions() {
 				}
 				m_log.line("Waiting for flop toggle (status 0x%04X). 186 PC profile:%s",
 					hp_status(), prof.c_str());
-				m_log.line("DSP chain: bio-polls=%ld, fed=%ld, consumed=%ld, DAC=%ld, DSP-PC=0x%04X, ctl-writes=%ld.",
-					m_bio_polls, m_dsp_feed, m_dsp_consume, m_dac_writes,
+				m_log.line("DSP chain: bio-polls=%ld, fed=%ld, consumed=%ld, overwritten=%ld, pcs3=%ld, DAC=%ld, DSP-PC=0x%04X, ctl-writes=%ld.",
+					m_bio_polls, m_dsp_feed, m_dsp_consume, m_dsp_overwrites, m_pcs3_reads, m_dac_writes,
 					(uint32_t)m_dsp->state_int(STATE_GENPC), m_ctl_writes);
 				// i186.h's state enum is protected; the indices are computed from the
 				// public I8086_HALT (layout: RELREG=+1, UMCS..MPCS=+2..+6,
@@ -1326,9 +1368,9 @@ TIMER_CALLBACK_MEMBER(dtpc_state::pump_tick) {
 			if (((m_rt_tx_count + m_rt_rx_count) % 16) == 0) {
 				m_log.line("Runtime traffic: sent=%ld, fetched=%ld, queue-remaining=%zu.",
 					m_rt_tx_count, m_rt_rx_count, m_rtq.size());
-				m_log.line("  DSP chain: bio-polls=%ld, fed=%ld, consumed=%ld, DAC=%ld, DSP-PC=0x%04X.",
-					m_bio_polls, m_dsp_feed, m_dsp_consume, m_dac_writes,
-					(uint32_t)m_dsp->state_int(STATE_GENPC));
+				m_log.line("  DSP chain: bio-polls=%ld, fed=%ld, consumed=%ld, overwritten=%ld, pcs3=%ld, DAC=%ld, DSP-PC=0x%04X. DMA0: %s",
+					m_bio_polls, m_dsp_feed, m_dsp_consume, m_dsp_overwrites, m_pcs3_reads, m_dac_writes,
+					(uint32_t)m_dsp->state_int(STATE_GENPC), dma0_state().c_str());
 			}
 		}
 		return;
@@ -1396,9 +1438,9 @@ TIMER_CALLBACK_MEMBER(dtpc_state::pump_tick) {
 	// Idle: keep an eye on whether the DSP chain works after the text is delivered.
 	if (!g_quiet && m_rtq.empty() && m_rt_tx_count > 0) {
 		if (++m_rt_idle == 20000) {
-			m_log.line("Idle: DSP chain bio-polls=%ld, fed=%ld, consumed=%ld, DAC=%ld, DSP-PC=0x%04X, status=0x%04X.",
-				m_bio_polls, m_dsp_feed, m_dsp_consume, m_dac_writes,
-				(uint32_t)m_dsp->state_int(STATE_GENPC), hp_status());
+			m_log.line("Idle: DSP chain bio-polls=%ld, fed=%ld, consumed=%ld, overwritten=%ld, pcs3=%ld, DAC=%ld, DSP-PC=0x%04X, status=0x%04X. DMA0: %s",
+				m_bio_polls, m_dsp_feed, m_dsp_consume, m_dsp_overwrites, m_pcs3_reads, m_dac_writes,
+				(uint32_t)m_dsp->state_int(STATE_GENPC), hp_status(), dma0_state().c_str());
 			m_rt_idle = 0;
 		}
 	}
@@ -1442,7 +1484,17 @@ void dtpc_state::machine_start() {
 			           : "10-byte block (4.2/NWS)");
 	}
 	m_log.line("DSP clock: %u MHz%s.", m_dsp_mhz, m_dsp_mhz==80 ? " (MAME default)" : " (adjusted via DTPC_DSPMHZ)");
-	m_log.line("Output gain (DTPC_GAIN): %.3f x  (1.0 = unchanged; 2.0 ~ +6.02 dB, compensates for half scale).", m_out_gain);
+	if (m_analog)
+		m_log.line("Analog output stage (DTPC_ANALOG): on. Polarity inverted, gain\n           (DTPC_GAIN) %d/1000. Gain 1000 leaves the DAC scale untouched; 1750 is\n           the calibrated estimate for the card's output amplifier.",
+			(int)(m_out_gain * 1000.0 + 0.5));
+	else
+		m_log.line("Analog output stage (DTPC_ANALOG): off. The DAC receives the DSP's\n           own codes, unmodified - no inversion and no gain.");
+	if (m_gain_ignored)
+		m_log.line("NOTE: DTPC_GAIN is ignored while DTPC_ANALOG is 0.");
+	if (m_gain_note == 1)
+		m_log.line("WARNING: DTPC_GAIN could not be parsed; using the default. Write it as\n           a plain decimal number such as 1.75.");
+	else if (m_gain_note == 2)
+		m_log.line("WARNING: DTPC_GAIN is outside the allowed range 0..8; using the default.");
 	save_item(NAME(m_cmd)); save_item(NAME(m_stat)); save_item(NAME(m_data));
 	save_item(NAME(m_dsp_dma)); save_item(NAME(m_ctl)); save_item(NAME(m_dma));
 	save_item(NAME(m_vol)); save_item(NAME(m_bio));
@@ -1456,6 +1508,26 @@ void dtpc_state::machine_reset() {
 	m_drain_after_flush_blocked=false;
 	m_log.line("Reset - boot ROM begins self-test (POST).");
 	m_pump->adjust(attotime::from_usec(100),0,attotime::from_usec(100));
+}
+
+static bool dtpc_parse_gain(const char *s, double &out) {
+	if (!s || !*s) return false;
+	const char *p = s;
+	while (*p == ' ' || *p == '\t') p++;
+	bool neg = false;
+	if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+	double v = 0.0;
+	int digits = 0;
+	while (*p >= '0' && *p <= '9') { v = v * 10.0 + (*p - '0'); p++; digits++; }
+	if (*p == '.') {
+		p++;
+		double f = 0.1;
+		while (*p >= '0' && *p <= '9') { v += (*p - '0') * f; f *= 0.1; p++; digits++; }
+	}
+	while (*p == ' ' || *p == '\t') p++;
+	if (!digits || *p) return false;
+	out = neg ? -v : v;
+	return true;
 }
 
 void dtpc_state::dtpc(machine_config &config) {
@@ -1490,10 +1562,42 @@ void dtpc_state::dtpc(machine_config &config) {
 	// Extra output gain placed AFTER the card's internal volume (both the software [12C]
 	// and the firmware-controlled hardware attenuator m_vol). Placed on the DAC->speaker
 	// route, so the card emulation itself is untouched; the route gain is multiplied with
-	// output_ctl_w's output gain, so the m_vol control is preserved. 1.0 = unchanged;
-	// DTPC_GAIN=2.0 (~ +6.02 dB) compensates for the observed half scale. Clamped 0..8.
+	// output_ctl_w's output gain, so the m_vol control is preserved.
+	//
+	// This models the card's analog output stage, which MAME does not emulate at all:
+	// the AD7541 is a multiplying DAC and the absolute level is set by the I/V converter
+	// and power amp behind it. It is NOT compensation for a digital error.
+	//
+	// Default 1.0, so what comes out is the DAC's own scale untouched. DTPC_GAIN
+	// (0..8) sets the gain of the stage that is missing.
+	//
+	// 1.75 (+4.86 dB) is the best estimate available. It was calibrated against two
+	// independent references, which agree to within a tenth of a dB although neither
+	// is a DECtalk PC card:
+	//   - a recording of a real DECtalk Express speaking the same text, fitted over 202
+	//     aligned 40 ms windows: +4.80 dB, 95% CI 4.75 to 4.87
+	//   - a later all-software DECtalk built to sound like 4.2CD, compared digitally
+	//     against the raw DAC codes so no recording chain is involved: +4.88 dB,
+	//     95% CI 4.76 to 4.98
+	// That software version clips above DAC code 1167 and 1.75 clips above 1169, so it
+	// is also the headroom its own vendor settled on. The loudest material tested here
+	// peaks at code 963, leaving about 1.7 dB.
+	// DTPC_ANALOG=0 bypasses the whole analog output stage - both the inversion in
+	// dac_w and this gain - so what reaches the DAC is the untouched stream of codes
+	// the DSP wrote. That is the card's digital truth, and the right thing to compare
+	// bit for bit against another implementation of the DSP.
+	if (const char *e = getenv("DTPC_ANALOG")) m_analog = (atoi(e) != 0);
+
 	double out_gain = 1.0;
-	if (const char *e = getenv("DTPC_GAIN")) { double v = atof(e); if (v >= 0.0 && v <= 8.0) out_gain = v; }
+	if (const char *e = getenv("DTPC_GAIN")) {
+		if (!m_analog)                   m_gain_ignored = true;
+		else {
+			double v = 0.0;
+			if (!dtpc_parse_gain(e, v))      m_gain_note = 1;   // could not be parsed
+			else if (v < 0.0 || v > 8.0)     m_gain_note = 2;   // outside 0..8
+			else                             out_gain = v;
+		}
+	}
 	m_out_gain = out_gain;
 	DAC_12BIT_R2R_TWOS_COMPLEMENT(config,m_dac,0).add_route(0,"speaker", out_gain); // AD7541
 }

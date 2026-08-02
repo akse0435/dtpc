@@ -87,16 +87,16 @@ To set the emulator's COM port to COM8, as used in the example earlier, run the 
 set DTPC_PORT=COM8
 ```
 
-I'd also recommend setting the audio gain to double, since the regular volume is a bit low. To do this, run:
+I'd also recommend setting the audio gain to 1.75, since the regular volume is a bit low. To do this, run:
 
 ```bat
-set DTPC_GAIN=2
+set DTPC_GAIN=1.75
 ```
 
 Now, to launch the emulator, I'd recommend using the following command:
 
 ```bat
-dtpc dtpc -video none -samplerate 20000
+dtpc dtpc -video none
 ```
 
 For future use, you can make a bat file with your preferred commands and place it in the mame folder, for quick access to starting the emulator.
@@ -113,6 +113,7 @@ The following is a complete list of variables that can be changed before launchi
 | DTPC_MODULES | modules | This can be used to specify a different folder containing the software modules. |
 | DTPC_PORT | none | This is used to specify the COM port that the emulator connects to, and is the only obligatory one. |
 | DTPC_DSPMHZ | 80 | This can be used to change the speed of the DSP for testing purposes. The actual DECtalk PC card uses a speed of 20 MHz, but since this produces damaged audio in the emulator, 80 is the default. It takes a value between 5 and 160. |
+| DTPC_ANALOG | 1 | Setting this to 0 will disable the emulated analog output chain, and the emulator will instead render the original digital audio stream. |
 | DTPC_GAIN | 1 | This can be used to adjust the gain of the audio output. It takes a value from 0.0 to 8.0. |
 | DTPC_PUMPUS | 5 | This can be used to change the runtime polling interval in microseconds. It takes a value between 2 and 500. |
 
@@ -121,5 +122,5 @@ The following is a complete list of variables that can be changed before launchi
 - All modules and the dictionary load correctly, proven by a RAM dump.
 - A few crashes have been fixed.
 - All languages are supported through fallback to other file names for each relevant module.
-- It has a latency of about 400 milliseconds from pressing a key in a screen reader (or sending text) until speech is heard.
+- The emulator has a latency of about 400 milliseconds from pressing a key in a screen reader (or sending text) until speech is heard.
 - The code is currently a bit cluttered, and could use a clean-up.
